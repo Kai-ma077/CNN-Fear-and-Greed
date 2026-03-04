@@ -7,154 +7,137 @@ import plotly.graph_objects as go
 from datetime import datetime
 import pytz
 
-st.set_page_config(page_title="全球市場情緒監控中心", layout="wide")
+st.set_page_config(page_title="全球市場多空診斷中心", layout="wide")
 
-# --- 1. 核心 OP 驗證與抓取邏輯 ---
+# --- 1. 核心數據獲取與驗證 ---
 @st.cache_data(ttl=600)
-def get_sentiment_data():
+def get_comprehensive_data():
     headers = {"User-Agent": "Mozilla/5.0"}
-    # 這是你提供的標準校準基準 (基準日: 數值)
-    calibration_bench = {
-        "03/03": 0.81,
-        "03/02": 0.79,
-        "02/27": 0.78
-    }
+    res = {"fng": 32, "status": "恐懼", "pc_latest": 0.81, "pc_list": [], "vix": 0}
     
-    # 預設回傳值
-    res = {
-        "fng": 32, 
-        "status": "恐懼", 
-        "pc_history": [
-            {"date": "03/03", "val": 0.81},
-            {"date": "03/02", "val": 0.79},
-            {"date": "02/27", "val": 0.78}
-        ]
-    }
-    
-    # A. 抓取 CNN 指數 (與你看到的 32 分同步)
+    # A. 抓取 CNN 指數
     try:
         url = "https://en.macromicro.me/charts/50108/cnn-fear-and-greed"
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             f_match = re.search(r'\"last_value\":\s*\"(\d+\.?\d*)\"', r.text)
-            if f_match:
-                res["fng"] = float(f_match.group(1))
-            if res["fng"] <= 25: res["status"] = "極度恐懼"
-            elif res["fng"] <= 45: res["status"] = "恐懼"
-            elif res["fng"] <= 55: res["status"] = "中立"
-            elif res["fng"] <= 75: res["status"] = "貪婪"
-            else: res["status"] = "極度貪婪"
+            if f_match: res["fng"] = float(f_match.group(1))
     except: pass
 
-    # B. OP (Put/Call Ratio) 驗證與自動更新邏輯
+    # B. OP (Put/Call Ratio) 驗證與歷史抓取
     try:
         ticker = yf.Ticker("^PCCR")
         df = ticker.history(period="15d")
         valid_df = df[df['Close'] > 0.1].dropna()
-        
         if not valid_df.empty:
-            # 建立一個暫存字典來比對歷史
-            temp_data = {d.strftime('%m/%d'): round(v, 2) for d, v in zip(valid_df.index, valid_df['Close'])}
-            
-            # 進行校準檢查：確認 03/03, 03/02, 02/27 的數值是否正確
-            match_count = 0
-            for check_date, check_val in calibration_bench.items():
-                if check_date in temp_data and temp_data[check_date] == check_val:
-                    match_count += 1
-            
-            # 如果三筆歷史數據有兩筆以上完全吻合，代表此來源正確，提取最新 3 筆
-            if match_count >= 2:
-                latest_3 = valid_df.tail(3).iloc[::-1]
-                pc_list = []
-                for date, row in latest_3.iterrows():
-                    pc_list.append({"date": date.strftime('%m/%d'), "val": round(row['Close'], 2)})
-                res["pc_history"] = pc_list
+            last_3 = valid_df.tail(3).iloc[::-1]
+            res["pc_list"] = [{"date": d.strftime('%m/%d'), "val": round(v, 2)} for d, v in zip(last_3.index, last_3['Close'])]
+            res["pc_latest"] = res["pc_list"][0]["val"]
     except:
-        pass
-        
+        res["pc_list"] = [{"date": "03/03", "val": 0.81}, {"date": "03/02", "val": 0.79}, {"date": "02/27", "val": 0.78}]
+        res["pc_latest"] = 0.81
+
+    # C. VIX 抓取
+    try:
+        vix_df = yf.Ticker("^VIX").history(period="2d")
+        res["vix"] = vix_df['Close'].iloc[-1]
+    except: res["vix"] = 20.0
+    
     return res
 
-# --- 2. 繪製指針圖 (含區域標示) ---
-def draw_gauge(value):
+# --- 2. 綜合診斷邏輯 ---
+def get_trading_advice(fng, vix, op):
+    # 建立評分機制
+    score = 0
+    reasons = []
+    
+    # VIX 判斷
+    if vix >= 40:
+        score += 40
+        reasons.append("🔥 VIX 指向極端恐慌 (40+)，歷史超底高勝率區。")
+    elif vix >= 30:
+        score += 20
+        reasons.append("⚠️ VIX 進入恐慌區 (30+)，波動劇烈。")
+        
+    # OP (Put/Call Ratio) 判斷
+    if op >= 1.0:
+        score += 40
+        reasons.append("🛡️ P/C Ratio 達 1.0 極端值，避險買盤過熱，反轉機會高。")
+    elif op >= 0.8:
+        score += 10
+        reasons.append("📈 P/C Ratio 處於高位，市場情緒偏空。")
+        
+    # CNN 指數
+    if fng <= 25:
+        score += 20
+        reasons.append("😨 CNN 處於極度恐懼。")
+    
+    # 最終建議
+    if score >= 80:
+        return "💎 【強烈建議：分批佈局】", "市場進入極端負面情緒，大盤往往在此時趕底，適合執行超底策略。", "success"
+    elif score >= 50:
+        return "👀 【觀察：謹慎選股】", "恐慌情緒正在蔓延，建議保留現金，尋找抗跌績優股。", "warning"
+    else:
+        return "📊 【中性：照常操作】", "目前數據無明顯極端異常，建議按既定策略操作，不宜追高。", "info"
+
+# --- 3. UI 元件 ---
+def draw_gauge(value, title="市場情緒"):
     fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = value,
-        domain = {'x': [0, 1], 'y': [0, 1]},
+        mode = "gauge+number", value = value,
         gauge = {
-            'axis': {
-                'range': [0, 100], 
-                'tickvals': [12.5, 35, 50, 65, 87.5],
-                'ticktext': ['極恐', '恐懼', '中性', '貪婪', '極貪']
-            },
+            'axis': {'range': [0, 100], 'tickvals': [12.5, 35, 50, 65, 87.5], 'ticktext': ['極恐','恐懼','中性','貪婪','極貪']},
             'bar': {'color': "#333333"},
             'steps': [
-                {'range': [0, 25], 'color': '#ff4b4b'},
-                {'range': [25, 45], 'color': '#ffa424'},
-                {'range': [45, 55], 'color': '#f2f2f2'},
-                {'range': [55, 75], 'color': '#90ee90'},
+                {'range': [0, 25], 'color': '#ff4b4b'}, {'range': [25, 45], 'color': '#ffa424'},
+                {'range': [45, 55], 'color': '#f2f2f2'}, {'range': [55, 75], 'color': '#90ee90'},
                 {'range': [75, 100], 'color': '#008000'}
             ],
             'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': value}
         }
     ))
-    fig.update_layout(
-        height=280, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)",
-        annotations=[
-            dict(x=0.1, y=0.1, text="恐懼區", showarrow=False, font=dict(color="#ff4b4b")),
-            dict(x=0.9, y=0.1, text="貪婪區", showarrow=False, font=dict(color="#008000"))
-        ]
-    )
+    fig.update_layout(height=250, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
-@st.cache_data(ttl=600)
-def get_market_data():
-    tickers = {"VIX": "^VIX", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"}
-    results = {}
-    for name, symbol in tickers.items():
-        try:
-            v = yf.Ticker(symbol).history(period="5d")[yf.Ticker(symbol).history(period="5d")['Close'] > 0].dropna()
-            results[name] = {"curr": v['Close'].iloc[-1], "prev": v['Close'].iloc[-2], "date": v.index[-1].strftime('%m/%d')}
-        except: results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
-    return results
+# --- 4. 主介面 ---
+data = get_comprehensive_data()
+advice_title, advice_text, advice_type = get_trading_advice(data['fng'], data['vix'], data['pc_latest'])
 
-# --- UI 渲染 ---
-st.title("📊 全球市場情緒監控中心")
-st.write(f"🕒 台北時間: {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
+st.title("🛡️ 全球市場多空診斷系統")
 
-sent = get_sentiment_data()
-m = get_market_data()
+# --- 頂部：AI 綜合建議區 ---
+if advice_type == "success": st.success(f"### {advice_title}\n{advice_text}")
+elif advice_type == "warning": st.warning(f"### {advice_title}\n{advice_text}")
+else: st.info(f"### {advice_title}\n{advice_text}")
 
-# 第一排指標
-st.subheader("🔥 核心情緒指標")
+# 第一排：核心三位一體數據
+st.subheader("🔥 核心診斷指標")
 c1, c2, c3 = st.columns([1.5, 1, 1])
 with c1:
-    st.metric("CNN 恐懼與貪婪指數", f"{sent['fng']:.0f}", sent['status'])
-    st.plotly_chart(draw_gauge(sent['fng']), use_container_width=True)
+    st.metric("CNN 恐懼與貪婪", f"{data['fng']:.0f}")
+    st.plotly_chart(draw_gauge(data['fng']), use_container_width=True)
 with c2:
-    v = m.get("VIX", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("VIX 恐慌指數", f"{v['curr']:.2f}", f"{v['curr']-v['prev']:.2f}", delta_color="inverse")
-    st.caption(f"📅 數據日期: {v['date']}")
+    v_color = "normal" if data['vix'] < 30 else "inverse"
+    st.metric("VIX 波動率指數", f"{data['vix']:.2f}", delta="恐慌區" if data['vix']>=30 else "穩定", delta_color=v_color)
+    st.progress(min(data['vix']/50, 1.0))
+    st.write(f"VIX > 30: 恐慌 | VIX > 40: **超底機會**")
 with c3:
-    pc_list = sent['pc_history']
-    latest_pc = pc_list[0]['val'] if pc_list else 0.81
-    prev_pc = pc_list[1]['val'] if len(pc_list) > 1 else latest_pc
-    st.metric("5-Day Avg Put/Call Ratio", f"{latest_pc:.2f}", f"{latest_pc - prev_pc:+.2f}", delta_color="inverse")
-    st.write("**📅 最近三個有效交易日：**")
-    for item in pc_list:
+    st.metric("P/C Ratio (5-Day Avg)", f"{data['pc_latest']:.2f}")
+    st.write("**📅 近三日走勢：**")
+    for item in data['pc_list']:
         st.write(f"- {item['date']}: **{item['val']:.2f}**")
+    st.write(f"OP > 1.0: **極端抄底訊號**")
 
 st.divider()
 
-# 第二、三排股市
-st.subheader("🏙️ 全球股市表現")
-m_cols = st.columns(3)
-markets = [("NAS", "NASDAQ (小那)"), ("SPX", "S&P 500 (標普)"), ("DJI", "Dow Jones (道瓊)"),
-           ("TWII", "台股加權 (TWII)"), ("N225", "日經 225 (JP)"), ("KS11", "韓國 KOSPI (KR)")]
-for i, (key, label) in enumerate(markets):
-    with m_cols[i % 3]:
-        data = m.get(key, {"curr":0, "prev":0, "date":"N/A"})
-        diff = data['curr'] - data['prev']
-        pct = (diff / data['prev'] * 100) if data['prev'] != 0 else 0
-        val_format = f"{data['curr']:,.2f}" if key in ["KS11", "TWII"] else f"{data['curr']:,.0f}"
-        st.metric(label, val_format, f"{diff:+,.2f} ({pct:+.2f}%)")
-        st.caption(f"📅 日期: {data['date']}")
+# 股市表現
+st.subheader("🏙️ 全球股市行情")
+m_data = yf.Tickers("^GSPC ^IXIC ^DJI ^TWII ^N225 ^KS11").history(period="2d")['Close']
+cols = st.columns(3)
+markets = [("^IXIC", "NASDAQ"), ("^GSPC", "S&P 500"), ("^DJI", "道瓊"), ("^TWII", "台股加權"), ("^N225", "日經"), ("^KS11", "韓國")]
+
+for i, (ticker, label) in enumerate(markets):
+    with cols[i % 3]:
+        curr, prev = m_data[ticker].iloc[-1], m_data[ticker].iloc[-2]
+        diff, pct = curr - prev, (curr - prev) / prev * 100
+        fmt = "{:,.2f}" if "TW" in label or "KR" in label else "{:,.0f}"
+        st.metric(label, fmt.format(curr), f"{diff:+,.2f} ({pct:+.2f}%)")
