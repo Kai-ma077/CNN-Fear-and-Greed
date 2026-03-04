@@ -5,59 +5,46 @@ import re
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="市場情緒監控中心", layout="wide")
+st.set_page_config(page_title="M平方 x VIX 監控中心", layout="wide")
 
-@st.cache_data(ttl=600)
-def fetch_cnn_sentiment():
-    # 嘗試三個可能的數據源
-    urls = [
-        "https://production.dataviz.cnn.io/index/feargreed/static/data",
-        "https://www.cnn.com/markets/fear-and-greed",
-        "https://api.alternative.me/fng/" # 備用方案：加密貨幣恐懼貪婪(如果CNN完全斷線時的參考)
-    ]
-    
+@st.cache_data(ttl=3600) # M平方數據更新較慢，建議一小時更新一次即可
+def get_macromicro_data():
+    # 財經M平方的美股情緒指標頁面
+    url = "https://www.macromicro.me/charts/47/s-p500-fear-greed-index"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://www.macromicro.me/"
     }
-
-    # 策略 1: 嘗試直接抓取 API
+    
     try:
-        r = requests.get(urls[0], headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            # 兼容多種 JSON 結構
-            fng = data.get('fng', data.get('market_rating_current', {}))
-            return {"score": fng.get('score'), "rating": fng.get('rating'), "source": "CNN API"}
-    except:
-        pass
-
-    # 策略 2: 暴力搜尋網頁中的數字 (Regex 強化)
-    try:
-        r = requests.get(urls[1], headers=headers, timeout=10)
-        # 尋找像是 "score":65.123 或 "rating":"greed" 的字眼
-        score_match = re.search(r'\"score\":(\d+\.?\d*)', r.text)
-        rating_match = re.search(r'\"rating\":\"(\w+)\"', r.text)
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return f"Error: {response.status_code}"
         
-        if score_match:
-            return {
-                "score": float(score_match.group(1)),
-                "rating": rating_match.group(1) if rating_match else "Unknown",
-                "source": "CNN Page Scraping"
-            }
-    except:
-        pass
+        # 這裡使用正則表達式抓取 M平方頁面上的最新數值
+        # 註：M平方常將數據放在 JavaScript 的變數中，我們直接挖取
+        match = re.search(r'\"last_value\":\s*\"(\d+\.?\d*)\"', response.text)
+        if match:
+            return {"val": float(match.group(1)), "source": "MacroMicro"}
+            
+        # 備用方案：尋找特定標籤內的數值
+        val_match = re.search(r'stat-value\">(\d+\.?\d*)', response.text)
+        if val_match:
+            return {"val": float(val_match.group(1)), "source": "MacroMicro"}
 
-    return None
+        return "數據格式解析失敗"
+    except Exception as e:
+        return str(e)
 
 @st.cache_data(ttl=600)
 def get_vix():
     vix = yf.Ticker("^VIX").history(period="2d")
     return vix['Close'].iloc[-1], vix['Close'].iloc[-2]
 
-st.title("📊 市場情緒即時監控中心")
+st.title("💹 財經M平方 x 全球情緒監控")
 
-# 獲取數據
-cnn_data = fetch_cnn_sentiment()
+# 抓取數據
+mm_data = get_macromicro_data()
 vix_curr, vix_prev = get_vix()
 
 col1, col2 = st.columns(2)
@@ -65,20 +52,25 @@ col1, col2 = st.columns(2)
 with col1:
     delta = vix_curr - vix_prev
     st.metric("VIX 波動率指數", f"{vix_curr:.2f}", f"{delta:.2f}", delta_color="inverse")
+    st.write("數據源：Yahoo Finance")
 
 with col2:
-    if cnn_data:
-        st.metric(f"CNN 恐懼與貪婪 ({cnn_data['source']})", 
-                  f"{cnn_data['score']:.0f}", 
-                  cnn_data['rating'].upper())
-        st.progress(int(cnn_data['score']))
+    if isinstance(mm_data, dict):
+        score = mm_data['val']
+        st.metric(f"M平方 恐懼與貪婪", f"{score:.2f}")
+        st.progress(int(score) if 0 <= score <= 100 else 50)
+        
+        # 根據數值給予評價
+        if score > 80: st.error("🔥 市場極度貪婪")
+        elif score < 20: st.success("❄️ 市場極度恐慌")
+        else: st.info("⚖️ 市場情緒中性")
     else:
-        st.error("CNN 數據目前無法獲取")
-        st.info("由於 CNN 加強了爬蟲防護，Streamlit 雲端伺服器可能被暫時封鎖 IP。")
+        st.error(f"M平方 抓取失敗：{mm_data}")
 
 st.divider()
-st.write("### 💡 為什麼 CNN 數據抓不到？")
-st.write("1. **IP 封鎖：** CNN 偵測到請求來自數據中心（AWS/GCP），這通常會被直接拒絕。")
-st.write("2. **動態渲染：** 數據可能透過瀏覽器端 JavaScript 生成，傳統爬蟲抓不到。")
+st.subheader("💡 為什麼選財經M平方？")
+st.write("1. **數據更全面**：M平方整合了更多散戶與大戶的綜合數據。")
+st.write("2. **穩定性高**：相對於 CNN，M平方的網頁結構在亞洲訪問較穩定。")
+st.write("3. **趨勢性強**：適合做中長期的情緒參考。")
 
-st.caption(f"檢查時間: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"系統檢查時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
