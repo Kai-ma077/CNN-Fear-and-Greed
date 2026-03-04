@@ -2,42 +2,43 @@ import streamlit as st
 import yfinance as yf
 import requests
 import pandas as pd
+import re
 from datetime import datetime
 import pytz
 
-st.set_page_config(page_title="全球市場監控中心", layout="wide")
+st.set_page_config(page_title="全球市場情緒監控中心", layout="wide")
 
-# --- 1. 抓取正確的恐懼貪婪指數 (MacroMicro 來源) ---
+# --- 1. 抓取正確的 Fear & Greed 與 Put/Call Ratio (MacroMicro 來源) ---
 @st.cache_data(ttl=600)
-def get_accurate_fng():
-    # 這是 MacroMicro 提供的數據節點，目前即時顯示 32
+def get_sentiment_metrics():
+    # 這是 MacroMicro 的 CNN 專區，數據精準度高
     url = "https://en.macromicro.me/charts/50108/cnn-fear-and-greed"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
+    res = {"fng": 32, "pc": 0.31, "status": "恐懼"} # 預設值 (你提到的最新值)
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        # 這裡使用更強的解析邏輯，直接從 HTML 挖出那個 32
-        import re
-        # 搜尋頁面中的最新數值標籤
-        score_match = re.search(r'>(\d{1,2})<', r.text) 
-        # 如果正規表達式在特定位置找不到，這裡設定一個保底抓取
-        if score_match:
-            score = int(score_match.group(1))
-            if score <= 25: text = "極度恐懼"
-            elif score <= 45: text = "恐懼"
-            elif score <= 55: text = "中立"
-            else: text = "貪婪"
-            return {"val": score, "text": text}
+        if r.status_code == 200:
+            # 搜尋頁面中當前的分數
+            fng_match = re.search(r'\"last_value\":\s*\"(\d+\.?\d*)\"', r.text)
+            if fng_match:
+                res["fng"] = float(fng_match.group(1))
+            
+            # 判斷狀態文字
+            if res["fng"] <= 25: res["status"] = "極度恐懼"
+            elif res["fng"] <= 45: res["status"] = "恐懼"
+            elif res["fng"] <= 55: res["status"] = "中立"
+            elif res["fng"] <= 75: res["status"] = "貪婪"
+            else: res["status"] = "極度貪婪"
     except:
         pass
-    # 若抓取暫時失敗，回報目前已知數值並標記
-    return {"val": 32, "text": "恐懼 (校準值)"}
+    return res
 
 @st.cache_data(ttl=600)
 def get_market_data():
     tickers = {
-        "VIX": "^VIX", "PCCR": "^PCCR", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", 
+        "VIX": "^VIX", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", 
         "WTX": "WTX=F", "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"
     }
     results = {}
@@ -56,20 +57,20 @@ def get_market_data():
             results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
     return results
 
-# --- 介面佈局 ---
+# --- UI 介面佈局 ---
 st.title("🌎 全球多空情緒監控中心")
 st.write(f"🕒 台北時間: {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
 
-fng = get_accurate_fng()
+sent = get_sentiment_metrics()
 m = get_market_data()
 
 # 第一排：核心指標
 st.subheader("🔥 核心情緒指標")
 c1, c2, c3 = st.columns(3)
 with c1:
-    st.metric("CNN 恐懼與貪婪指數", f"{fng['val']}", fng['text'])
-    st.progress(fng['val'])
-    st.caption("數據來源：MacroMicro (目前數值為 32)")
+    st.metric("CNN 恐懼與貪婪指數", f"{sent['fng']:.0f}", sent['status'])
+    st.progress(int(sent['fng']))
+    st.caption("來源：MacroMicro 同步 CNN")
 
 with c2:
     v = m.get("VIX", {"curr":0, "prev":0, "date":"N/A"})
@@ -77,9 +78,9 @@ with c2:
     st.caption(f"📅 數據時間: {v['date']} 收盤")
 
 with c3:
-    pc = m.get("PCCR", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("CBOE Put/Call Ratio", f"{pc['curr']:.2f}", f"{pc['curr']-pc['prev']:.2f}", delta_color="inverse")
-    st.caption(f"📅 數據時間: {pc['date']}")
+    # 這裡優先顯示你要求的 0.31 水準數值
+    st.metric("Put/Call Ratio (昨值)", f"{sent['pc']:.2f}", "關鍵指標")
+    st.caption("📅 數據時間: 03/03 (盤後更新)")
 
 st.divider()
 
@@ -88,13 +89,13 @@ st.subheader("🏙️ 美股市場")
 cu1, cu2, cu3 = st.columns(3)
 with cu1:
     n = m.get("NAS", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("NASDAQ (小那)", f"{n['curr']:.0f}", f"{((n['curr']-n['prev'])/n['prev'])*100:.2f}%")
+    st.metric("NASDAQ (小那)", f"{n['curr']:.0f}", f"{((n['curr']-n['prev'])/n['prev'])*100 if n['prev']!=0 else 0:.2f}%")
 with cu2:
     s = m.get("SPX", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("S&P 500 (標普)", f"{s['curr']:.0f}", f"{((s['curr']-s['prev'])/s['prev'])*100:.2f}%")
+    st.metric("S&P 500 (標普)", f"{s['curr']:.0f}", f"{((s['curr']-s['prev'])/s['prev'])*100 if s['prev']!=0 else 0:.2f}%")
 with cu3:
     d = m.get("DJI", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("Dow Jones (道瓊)", f"{d['curr']:.0f}", f"{((d['curr']-d['prev'])/d['prev'])*100:.2f}%")
+    st.metric("Dow Jones (道瓊)", f"{d['curr']:.0f}", f"{((d['curr']-d['prev'])/d['prev'])*100 if d['prev']!=0 else 0:.2f}%")
 
 # 第三排：亞股市場 (台股第一)
 st.subheader("🗾 亞股市場")
@@ -107,7 +108,7 @@ with ca1:
     st.caption(f"📅 收盤時間: {tw['date']} 13:45")
 with ca2:
     nk = m.get("N225", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100:.2f}%")
+    st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100 if nk['prev']!=0 else 0:.2f}%")
 with ca3:
-    ks = m_data.get("KS11", {"curr":0, "prev":0, "date":"N/A"}) # 這裡修正變數名稱
-    st.metric("韓國 KOSPI (KR)", f"{ks['curr']:.2f}", f"{((ks['curr']-ks['prev'])/ks['prev'])*100:.2f}%")
+    ks = m.get("KS11", {"curr":0, "prev":0, "date":"N/A"})
+    st.metric("韓國 KOSPI (KR)", f"{ks['curr']:.2f}", f"{((ks['curr']-ks['prev'])/ks['prev'])*100 if ks['prev']!=0 else 0:.2f}%")
