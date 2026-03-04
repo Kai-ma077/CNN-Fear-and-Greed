@@ -1,0 +1,5 @@
+streamlit
+yfinance
+fear-and-greed
+plotly
+pandas
