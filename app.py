@@ -9,11 +9,10 @@ import pytz
 
 st.set_page_config(page_title="全球市場情緒監控中心", layout="wide")
 
-# --- 1. 抓取數據 (校準至 32 與 0.81) ---
+# --- 1. 數據獲取 ---
 @st.cache_data(ttl=600)
 def get_sentiment_data():
     headers = {"User-Agent": "Mozilla/5.0"}
-    # 預設基準值
     res = {"fng": 32, "status": "恐懼", "pc_history": []}
     
     # 抓取 CNN 恐懼貪婪分數
@@ -44,7 +43,7 @@ def get_sentiment_data():
         
     return res
 
-# --- 2. 繪製 CNN 風格指針圖 ---
+# --- 2. 繪製 CNN 指針圖 ---
 def draw_gauge(value):
     fig = go.Figure(go.Indicator(
         mode = "gauge+number",
@@ -52,19 +51,15 @@ def draw_gauge(value):
         domain = {'x': [0, 1], 'y': [0, 1]},
         gauge = {
             'axis': {'range': [0, 100], 'tickwidth': 1},
-            'bar': {'color': "darkblue"},
+            'bar': {'color': "#333333"},
             'steps': [
-                {'range': [0, 25], 'color': '#ff4b4b'},    # 極度恐懼
-                {'range': [25, 45], 'color': '#ffa424'},   # 恐懼
-                {'range': [45, 55], 'color': '#f2f2f2'},   # 中立
-                {'range': [55, 75], 'color': '#90ee90'},   # 貪婪
-                {'range': [75, 100], 'color': '#008000'}   # 極度貪婪
+                {'range': [0, 25], 'color': '#ff4b4b'},
+                {'range': [25, 45], 'color': '#ffa424'},
+                {'range': [45, 55], 'color': '#f2f2f2'},
+                {'range': [55, 75], 'color': '#90ee90'},
+                {'range': [75, 100], 'color': '#008000'}
             ],
-            'threshold': {
-                'line': {'color': "red", 'width': 4},
-                'thickness': 0.75,
-                'value': value
-            }
+            'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': value}
         }
     ))
     fig.update_layout(height=250, margin=dict(l=30, r=30, t=30, b=0), paper_bgcolor="rgba(0,0,0,0)")
@@ -76,11 +71,25 @@ def get_market_data():
     results = {}
     for name, symbol in tickers.items():
         try:
-            df = yf.Ticker(symbol).history(period="5d")
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period="5d")
             if not df.empty:
                 v = df[df['Close'] > 0].dropna()
-                results[name] = {"curr": v['Close'].iloc[-1], "prev": v['Close'].iloc[-2], "date": v.index[-1].strftime('%m/%d')}
-        except: results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
+                curr = v['Close'].iloc[-1]
+                prev = v['Close'].iloc[-2]
+                dt_str = v.index[-1].strftime('%m/%d')
+                
+                # 嘗試抓取分鐘級別的精確時間
+                try:
+                    df_min = ticker.history(period="1d", interval="1m")
+                    if not df_min.empty:
+                        last_time = df_min.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
+                        dt_str = last_time.strftime('%m/%d %H:%M')
+                except: pass
+                
+                results[name] = {"curr": curr, "prev": prev, "date": dt_str}
+        except:
+            results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
     return results
 
 # --- UI 渲染 ---
@@ -101,7 +110,7 @@ with c1:
 with c2:
     v = m.get("VIX", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("VIX 恐慌指數", f"{v['curr']:.2f}", f"{v['curr']-v['prev']:.2f}", delta_color="inverse")
-    st.caption(f"📅 數據時間: {v['date']} 收盤")
+    st.caption(f"📅 最後成交: {v['date']}")
 
 with c3:
     latest_pc = sent['pc_history'][0]['val'] if sent['pc_history'] else 0.81
@@ -113,30 +122,35 @@ with c3:
 
 st.divider()
 
-# 第二排：美股市場 (小那 -> 標普 -> 道瓊)
+# 第二排：美股市場 (補回數據更新時間)
 st.subheader("🏙️ 美股市場")
 cu1, cu2, cu3 = st.columns(3)
 with cu1:
     n = m.get("NAS", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("NASDAQ (小那)", f"{n['curr']:.0f}", f"{((n['curr']-n['prev'])/n['prev'])*100 if n['prev']!=0 else 0:.2f}%")
+    st.caption(f"📅 數據更新: {n['date']}") # 補回這裡
 with cu2:
     s = m.get("SPX", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("S&P 500 (標普)", f"{s['curr']:.0f}", f"{((s['curr']-s['prev'])/s['prev'])*100 if s['prev']!=0 else 0:.2f}%")
+    st.caption(f"📅 數據更新: {s['date']}") # 補回這裡
 with cu3:
     d = m.get("DJI", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("Dow Jones (道瓊)", f"{d['curr']:.0f}", f"{((d['curr']-d['prev'])/d['prev'])*100 if d['prev']!=0 else 0:.2f}%")
+    st.caption(f"📅 數據更新: {d['date']}") # 補回這裡
 
-# 第三排：亞股市場 (台股第一)
+# 第三排：亞股市場
 st.subheader("🗾 亞股市場")
 ca1, ca2, ca3 = st.columns(3)
 with ca1:
     tw = m.get("WTX") if m.get("WTX", {}).get("curr", 0) > 0 else m.get("TWII", {"curr":0, "prev":0, "date":"N/A"})
     diff, pct = tw['curr']-tw['prev'], ((tw['curr']-tw['prev'])/tw['prev'])*100 if tw['prev']!=0 else 0
     st.metric("台股市場 (TW)", f"{tw['curr']:.0f}", f"{diff:+.0f} ({pct:+.2f}%)")
-    st.caption(f"📅 收盤: {tw['date']} 13:45")
+    st.caption(f"📅 收盤: {tw['date']}")
 with ca2:
     nk = m.get("N225", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100 if nk['prev']!=0 else 0:.2f}%")
+    st.caption(f"📅 收盤: {nk['date']}")
 with ca3:
     ks = m.get("KS11", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("韓國 KOSPI (KR)", f"{ks['curr']:.2f}", f"{((ks['curr']-ks['prev'])/ks['prev'])*100 if ks['prev']!=0 else 0:.2f}%")
+    st.caption(f"📅 收盤: {ks['date']}")
