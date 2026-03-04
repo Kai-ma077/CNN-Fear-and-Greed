@@ -3,24 +3,36 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="專業情緒監控中心", layout="wide")
+st.set_page_config(page_title="全球市場情緒儀表板", layout="wide")
 
 @st.cache_data(ttl=600)
-def get_financial_data():
-    # 抓取三個核心指標：VIX, Put/Call Ratio 指數, 標普500
+def get_global_market():
+    # 定義全球核心指數 Ticker
     tickers = {
-        "VIX": "^VIX",
-        "Put/Call Ratio": "^PCCR",  # CBOE Put/Call Ratio 指數
-        "S&P 500": "^GSPC"
+        "VIX 恐慌指數": "^VIX",
+        "Put/Call Ratio": "^PCCR",
+        "標普 500 (US)": "^GSPC",
+        "納斯達克 (US)": "^IXIC",
+        "台指期貨 (TW)": "WTX=F", # 台灣期指連續合約
+        "日經 225 (JP)": "^N225",
+        "韓國綜合 (KR)": "^KS11"
     }
     
     results = {}
     for name, symbol in tickers.items():
         try:
-            data = yf.Ticker(symbol).history(period="5d")
+            # 抓取 10 天數據確保能避開假日或延遲
+            data = yf.Ticker(symbol).history(period="10d")
             if not data.empty:
-                curr = data['Close'].iloc[-1]
-                prev = data['Close'].iloc[-2]
+                # 針對 PCCR 做特殊處理：如果最後一筆是 0，往前找非 0 的那一筆
+                if name == "Put/Call Ratio":
+                    valid_data = data[data['Close'] > 0]
+                    curr = valid_data['Close'].iloc[-1] if not valid_data.empty else 0
+                    prev = valid_data['Close'].iloc[-2] if len(valid_data) > 1 else 0
+                else:
+                    curr = data['Close'].iloc[-1]
+                    prev = data['Close'].iloc[-2]
+                
                 results[name] = {"curr": curr, "prev": prev}
             else:
                 results[name] = {"curr": 0, "prev": 0}
@@ -28,49 +40,50 @@ def get_financial_data():
             results[name] = {"curr": 0, "prev": 0}
     return results
 
-st.title("🏛️ 專業市場情緒監控中心 (API 穩定版)")
-st.write("本系統直接對接 Yahoo Finance API，確保 24 小時不中斷連線。")
+st.title("🌎 全球多空情緒監控中心")
+st.write(f"最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (台北時間)")
 
-# 獲取數據
-data = get_financial_data()
+data = get_global_market()
 
-# --- 第一排：核心指標卡片 ---
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    v = data["VIX"]
-    delta = v["curr"] - v["prev"]
-    st.metric("VIX 恐慌指數", f"{v['curr']:.2f}", f"{delta:.2f}", delta_color="inverse")
-    if v["curr"] > 25: st.warning("⚠️ 市場波動劇烈")
-
-with col2:
+# --- 第一排：核心情緒指標 (VIX & PCCR) ---
+st.subheader("🔥 核心情緒指標")
+c1, c2 = st.columns(2)
+with c1:
+    v = data["VIX 恐慌指數"]
+    st.metric("VIX 恐慌指數", f"{v['curr']:.2f}", f"{v['curr']-v['prev']:.2f}", delta_color="inverse")
+with c2:
     pc = data["Put/Call Ratio"]
-    pc_delta = pc["curr"] - pc["prev"]
-    # PCCR 通常在 0.6~1.2 之間波動
-    st.metric("CBOE Put/Call Ratio", f"{pc['curr']:.2f}", f"{pc_delta:.2f}", delta_color="inverse")
-    if pc["curr"] > 1.0: st.info("📈 看跌期權增加，暗示市場恐懼")
+    st.metric("CBOE Put/Call Ratio (昨值)", f"{pc['curr']:.2f}", f"{pc['curr']-pc['prev']:.2f}", delta_color="inverse")
+    st.caption("註：P/C Ratio 通常延遲一天更新")
 
-with col3:
-    sp = data["S&P 500"]
-    sp_delta = ((sp["curr"] - sp["prev"]) / sp["prev"]) * 100
-    st.metric("S&P 500 指數", f"{sp['curr']:.0f}", f"{sp_delta:.2f}%")
-
-# --- 第二排：自定義情緒判斷 ---
 st.divider()
-st.subheader("🤖 AI 情緒診斷")
 
-# 簡單的邏輯判斷
-vix_val = data["VIX"]["curr"]
-pc_val = data["Put/Call Ratio"]["curr"]
+# --- 第二排：美股與台股 ---
+st.subheader("🏙️ 美股 & 台股")
+c3, c4, c5 = st.columns(3)
+with c3:
+    sp = data["標普 500 (US)"]
+    st.metric("S&P 500", f"{sp['curr']:.0f}", f"{((sp['curr']-sp['prev'])/sp['prev'])*100:.2f}%")
+with c4:
+    nas = data["納斯達克 (US)"]
+    st.metric("NASDAQ", f"{nas['curr']:.0f}", f"{((nas['curr']-nas['prev'])/nas['prev'])*100:.2f}%")
+with c5:
+    tw = data["台指期貨 (TW)"]
+    st.metric("台指期 (近月)", f"{tw['curr']:.0f}", f"{tw['curr']-tw['prev']:.0f}")
 
-if vix_val > 25 and pc_val > 1.0:
-    st.error("### 當前市場狀態：極度恐慌 (Extreme Fear)")
-    st.write("VIX 與 Put/Call Ratio 同步走高，市場情緒低迷，通常是潛在的買入觀察點。")
-elif vix_val < 15 and pc_val < 0.7:
-    st.success("### 當前市場狀態：過度樂觀 (Extreme Greed)")
-    st.write("市場非常放鬆，追高風險正在增加，請注意回撤風險。")
-else:
-    st.info("### 當前市場狀態：中性盤整 (Neutral)")
-    st.write("指標處於正常區間，建議觀察標普 500 支撐位。")
+# --- 第三排：亞股市場 ---
+st.subheader("🗾 亞股市場")
+c6, c7 = st.columns(2)
+with c6:
+    nk = data["日經 225 (JP)"]
+    st.metric("日經 225", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100:.2f}%")
+with c7:
+    ks = data["韓國綜合 (KR)"]
+    st.metric("韓國 KOSPI", f"{ks['curr']:.2f}", f"{((ks['curr']-ks['prev'])/ks['prev'])*100:.2f}%")
 
-st.caption(f"最後更新時間 (UTC): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# --- 底部診斷 ---
+st.divider()
+if data["VIX 恐慌指數"]["curr"] > 25:
+    st.error("🚨 警告：全球波動率攀升，避險情緒濃厚。")
+elif data["VIX 恐慌指數"]["curr"] < 15:
+    st.success("☀️ 提示：市場目前處於低波動穩定狀態。")
