@@ -1,12 +1,12 @@
 import streamlit as st
 import yfinance as yf
-import plotly.graph_objects as go
 import requests
 import pandas as pd
 
+# 1. 網頁基本設定
 st.set_page_config(page_title="市場情緒監控中心", layout="wide")
 
-# 定義抓取 CNN 數據的函數 (直接爬取 API)
+# 2. 定義抓取 CNN 數據的函數
 @st.cache_data(ttl=600)
 def get_cnn_data():
     headers = {
@@ -16,7 +16,7 @@ def get_cnn_data():
     r = requests.get(url, headers=headers)
     return r.json()
 
-# 定義抓取 VIX 數據
+# 3. 定義抓取 VIX 數據
 @st.cache_data(ttl=600)
 def get_vix_data():
     vix = yf.Ticker("^VIX").history(period="2d")
@@ -24,12 +24,13 @@ def get_vix_data():
 
 st.title("📊 市場情緒即時監控中心")
 
+# --- 開始邏輯處理 ---
 try:
     # 執行數據抓取
     cnn_data = get_cnn_data()
     vix_curr, vix_prev = get_vix_data()
     
-    # 頂部三大指標
+    # 頂部三大指標佈局
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -43,29 +44,29 @@ try:
         st.progress(int(fng_val))
         
     with col3:
-        # 抓取 Put/Call Ratio 指標
-        pc_ratio = cnn_data['indicator_data'][4]['score'] # CNN API 中第 5 個指標通常是 P/C Ratio
-        st.metric("Put/Call Ratio (5D)", f"{pc_ratio:.2f}")
+        # 尋找 Put/Call Ratio 指標 (在 indicator_data 列表中尋找正確的標籤)
+        pc_item = next((i for i in cnn_data['indicator_data'] if 'put_and_call_options' in i['instrument_id']), None)
+        if pc_item:
+            st.metric("Put/Call Ratio (5D)", f"{pc_item['score']:.2f}")
+        else:
+            st.write("暫無 Put/Call Ratio 數據")
 
-    # 下方詳細圖表
+    # 下方詳細數據表格
     st.divider()
-    st.subheader("各項指標細節")
+    st.subheader("各項子指標細節")
     
-    # 整理指標數據成表格
     indicators = []
     for item in cnn_data['indicator_data']:
         indicators.append({
             "指標名稱": item['label'],
             "目前得分": f"{item['score']:.2f}",
-            "狀態": item['rating']
+            "狀態": item.get('rating', 'N/A')
         })
     st.table(pd.DataFrame(indicators))
+    st.caption(f"數據最後更新時間: {cnn_data['market_rating_current']['timestamp']}")
 
 except Exception as e:
-    st.error(f"發生錯誤：{e}。請檢查網路連線或稍後再試。")
+    st.error(f"發生錯誤：{e}")
+    st.info("提示：這可能是因為 CNN 接口暫時變動或連線不穩。")
 
 st.caption("數據來源：CNN Business & Yahoo Finance")
-
-except Exception as e:
-
-    st.error(f"數據抓取失敗，請稍後重試。錯誤訊息: {e}")
