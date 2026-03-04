@@ -17,7 +17,7 @@ def get_opening_remarks():
         remarks['asia'] = f"📅 週末休市，下週一 {(now + timedelta(days=days_to_mon)).strftime('%m/%d')} 09:00 開盤"
         remarks['us'] = f"📅 週末休市，下週一 {(now + timedelta(days=days_to_mon)).strftime('%m/%d')} 22:30 開盤"
     else:
-        remarks['asia'] = "🕒 亞股交易日：台(13:30收)、日(14:00收)、韓(14:30收)"
+        remarks['asia'] = "🕒 亞股交易日：台(13:45期貨收)、日(14:00收)、韓(14:30收)"
         remarks['us'] = "🕒 美股交易日：22:30 開盤 (冬令時間)"
     return remarks
 
@@ -34,39 +34,34 @@ def get_cnn_fng():
 
 @st.cache_data(ttl=300)
 def get_market_data():
+    # WTX=F 為台指期連續合約
     tickers = {
         "VIX": "^VIX", "PCCR": "^PCCR", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", 
-        "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"
+        "WTX": "WTX=F", "N225": "^N225", "KS11": "^KS11"
     }
     results = {}
     for name, symbol in tickers.items():
         try:
             ticker = yf.Ticker(symbol)
-            # 抓取最近 1 天的 1 分鐘 K 線來取得精確最後成交時間
-            df_recent = ticker.history(period="1d", interval="1m")
-            
-            if not df_recent.empty:
-                curr_price = df_recent['Close'].iloc[-1]
-                # 轉換為台北時間
-                last_time = df_recent.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
-                time_str = last_time.strftime('%m/%d %H:%M')
+            # 抓取日線數據算漲跌
+            df_daily = ticker.history(period="5d")
+            if not df_daily.empty:
+                valid_daily = df_daily[df_daily['Close'] > 0].dropna()
+                curr_price = valid_daily['Close'].iloc[-1]
+                prev_price = valid_daily['Close'].iloc[-2]
                 
-                # 取得前一收盤價算漲跌
-                df_daily = ticker.history(period="5d")
-                prev_price = df_daily['Close'].iloc[-2]
-                
-                results[name] = {"curr": curr_price, "prev": prev_price, "date": time_str}
-            else:
-                # 備援方案：若一分鐘線抓不到(如休市)，抓日線
-                df_daily = ticker.history(period="2d")
-                curr_price = df_daily['Close'].iloc[-1]
-                prev_price = df_daily['Close'].iloc[-2]
-                # 手動修正顯示時間：亞股若已收盤則標示標準收盤時段
-                last_date = df_daily.index[-1].strftime('%m/%d')
-                if name == "TWII": time_str = f"{last_date} 13:45"
-                elif name == "N225": time_str = f"{last_date} 14:00"
-                elif name == "KS11": time_str = f"{last_date} 14:30"
-                else: time_str = f"{last_date} 收盤"
+                # 抓取分鐘線取得精確成交時間
+                df_min = ticker.history(period="1d", interval="1m")
+                if not df_min.empty:
+                    last_time = df_min.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
+                    time_str = last_time.strftime('%m/%d %H:%M')
+                else:
+                    # 盤後/休市期間的手動時間標註
+                    last_date = valid_daily.index[-1].strftime('%m/%d')
+                    if name == "WTX": time_str = f"{last_date} 13:45"
+                    elif name == "N225": time_str = f"{last_date} 14:00"
+                    elif name == "KS11": time_str = f"{last_date} 14:30"
+                    else: time_str = f"{last_date} 收盤"
                 
                 results[name] = {"curr": curr_price, "prev": prev_price, "date": time_str}
         except:
@@ -120,9 +115,12 @@ st.subheader("🗾 亞股市場")
 st.info(remarks['asia'])
 ca1, ca2, ca3 = st.columns(3)
 with ca1:
-    tw = m_data.get("TWII", {"curr":0, "prev":0, "date":"N/A"})
-    st.metric("台股加權 (TW)", f"{tw['curr']:.0f}", f"{tw['curr']-tw['prev']:.2f}")
-    st.caption(f"📅 收盤時間: {tw['date']}")
+    tw = m_data.get("WTX", {"curr":0, "prev":0, "date":"N/A"})
+    tw_diff = tw['curr'] - tw['prev']
+    tw_pct = (tw_diff / tw['prev']) * 100 if tw['prev'] != 0 else 0
+    # 這裡會同時顯示點數與百分比
+    st.metric("台指期貨 (WTX)", f"{tw['curr']:.0f}", f"{tw_diff:+.0f} ({tw_pct:+.2f}%)")
+    st.caption(f"📅 最後成交: {tw['date']}")
 with ca2:
     nk = m_data.get("N225", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100:.2f}%")
