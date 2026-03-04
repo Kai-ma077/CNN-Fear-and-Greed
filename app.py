@@ -29,23 +29,23 @@ def get_fng_data():
     return res
 
 @st.cache_data(ttl=600)
-def get_pc_three_days():
-    # 抓取 CBOE Put/Call Ratio 指數近三天的有效數據
+def get_pc_one_week():
+    # 抓取 CBOE Put/Call Ratio 指數近一週 (5個交易日) 的數據
     try:
         ticker = yf.Ticker("^PCCR")
-        df = ticker.history(period="10d")
-        valid = df[df['Close'] > 0.1].dropna() # 過濾無效值
-        # 取得最後三筆
-        last_3 = valid.tail(3).iloc[::-1] # 倒序排列，最新的在上面
+        df = ticker.history(period="15d") # 抓多一點確保扣除假日有5天
+        valid = df[df['Close'] > 0.1].dropna() 
+        # 取得最後 5 筆 (近一週交易日)
+        last_5 = valid.tail(5).iloc[::-1] 
         pc_list = []
-        for date, row in last_3.iterrows():
+        for date, row in last_5.iterrows():
             pc_list.append({
                 "date": date.strftime('%m/%d'),
                 "val": round(row['Close'], 2)
             })
         return pc_list
     except:
-        return [{"date": "N/A", "val": 0.31}] # 備援預設值
+        return [{"date": "N/A", "val": 0.31}]
 
 @st.cache_data(ttl=600)
 def get_market_data():
@@ -69,10 +69,10 @@ st.title("🌎 全球多空情緒監控中心")
 st.write(f"🕒 台北時間: {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
 
 fng = get_fng_data()
-pc_history = get_pc_three_days()
+pc_history = get_pc_one_week()
 m = get_market_data()
 
-# 第一排：核心指標
+# 第一排：核心情緒指標
 st.subheader("🔥 核心情緒指標")
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -86,19 +86,19 @@ with c2:
     st.caption(f"📅 數據時間: {v['date']} 收盤")
 
 with c3:
-    # 顯示近三天 Put/Call Ratio
+    # 顯示最新 P/C Ratio 與漲跌
     latest_pc = pc_history[0]['val'] if pc_history else 0
     prev_pc = pc_history[1]['val'] if len(pc_history) > 1 else latest_pc
-    st.metric("Put/Call Ratio (最新)", f"{latest_pc:.2f}", f"{latest_pc - prev_pc:+.2f}")
+    st.metric("Put/Call Ratio (最新)", f"{latest_pc:.2f}", f"{latest_pc - prev_pc:+.2f}", delta_color="inverse")
     
-    # 顯示三天列表
-    st.write("**📅 近三日走勢：**")
+    # 顯示一週列表
+    st.write("**📅 近一週走勢 (最新在首)：**")
     for item in pc_history:
         st.write(f"- {item['date']}: **{item['val']:.2f}**")
 
 st.divider()
 
-# 第二排：美股市場
+# 第二排：美股市場 (小那 -> 標普 -> 道瓊)
 st.subheader("🏙️ 美股市場")
 cu1, cu2, cu3 = st.columns(3)
 with cu1:
@@ -111,7 +111,7 @@ with cu3:
     d = m.get("DJI", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("Dow Jones (道瓊)", f"{d['curr']:.0f}", f"{((d['curr']-d['prev'])/d['prev'])*100 if d['prev']!=0 else 0:.2f}%")
 
-# 第三排：亞股市場
+# 第三排：亞股市場 (台股第一)
 st.subheader("🗾 亞股市場")
 ca1, ca2, ca3 = st.columns(3)
 with ca1:
