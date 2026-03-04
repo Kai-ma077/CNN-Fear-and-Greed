@@ -34,34 +34,32 @@ def get_cnn_fng():
 
 @st.cache_data(ttl=300)
 def get_market_data():
-    # WTX=F 為台指期連續合約
+    # 這裡加入備援機制：如果 WTX=F 失敗，改抓 ^TWII
     tickers = {
         "VIX": "^VIX", "PCCR": "^PCCR", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", 
-        "WTX": "WTX=F", "N225": "^N225", "KS11": "^KS11"
+        "WTX": "WTX=F", "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"
     }
     results = {}
     for name, symbol in tickers.items():
         try:
             ticker = yf.Ticker(symbol)
-            # 抓取日線數據算漲跌
             df_daily = ticker.history(period="5d")
             if not df_daily.empty:
                 valid_daily = df_daily[df_daily['Close'] > 0].dropna()
                 curr_price = valid_daily['Close'].iloc[-1]
                 prev_price = valid_daily['Close'].iloc[-2]
                 
-                # 抓取分鐘線取得精確成交時間
-                df_min = ticker.history(period="1d", interval="1m")
-                if not df_min.empty:
-                    last_time = df_min.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
-                    time_str = last_time.strftime('%m/%d %H:%M')
-                else:
-                    # 盤後/休市期間的手動時間標註
-                    last_date = valid_daily.index[-1].strftime('%m/%d')
-                    if name == "WTX": time_str = f"{last_date} 13:45"
-                    elif name == "N225": time_str = f"{last_date} 14:00"
-                    elif name == "KS11": time_str = f"{last_date} 14:30"
-                    else: time_str = f"{last_date} 收盤"
+                # 取得時間
+                last_date = valid_daily.index[-1].strftime('%m/%d')
+                time_str = f"{last_date} 收盤"
+                
+                # 嘗試抓取精確分鐘線
+                try:
+                    df_min = ticker.history(period="1d", interval="1m")
+                    if not df_min.empty:
+                        last_time = df_min.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
+                        time_str = last_time.strftime('%m/%d %H:%M')
+                except: pass
                 
                 results[name] = {"curr": curr_price, "prev": prev_price, "date": time_str}
         except:
@@ -74,7 +72,7 @@ remarks = get_opening_remarks()
 fng = get_cnn_fng()
 m_data = get_market_data()
 
-# 核心指標
+# 核心指標 (第一排)
 st.subheader("🔥 核心情緒指標")
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -93,9 +91,8 @@ with c3:
 
 st.divider()
 
-# 美股市場
+# 美股市場 (第二排)
 st.subheader("🏙️ 美股市場")
-st.info(remarks['us'])
 cu1, cu2, cu3 = st.columns(3)
 with cu1:
     nas = m_data.get("NAS", {"curr":0, "prev":0, "date":"N/A"})
@@ -110,17 +107,22 @@ with cu3:
     st.metric("Dow Jones (道瓊)", f"{dji['curr']:.0f}", f"{((dji['curr']-dji['prev'])/dji['prev'])*100:.2f}%")
     st.caption(f"📅 最後成交: {dji['date']}")
 
-# 亞股市場
+# 亞股市場 (第三排)
 st.subheader("🗾 亞股市場")
-st.info(remarks['asia'])
 ca1, ca2, ca3 = st.columns(3)
 with ca1:
-    tw = m_data.get("WTX", {"curr":0, "prev":0, "date":"N/A"})
-    tw_diff = tw['curr'] - tw['prev']
-    tw_pct = (tw_diff / tw['prev']) * 100 if tw['prev'] != 0 else 0
-    # 這裡會同時顯示點數與百分比
-    st.metric("台指期貨 (WTX)", f"{tw['curr']:.0f}", f"{tw_diff:+.0f} ({tw_pct:+.2f}%)")
-    st.caption(f"📅 最後成交: {tw['date']}")
+    # 核心修正：如果 WTX=F 抓不到，改用加權指數數據
+    tw_data = m_data.get("WTX")
+    label = "台指期貨 (WTX)"
+    if not tw_data or tw_data['curr'] == 0:
+        tw_data = m_data.get("TWII", {"curr":0, "prev":0, "date":"N/A"})
+        label = "台股加權 (TW-自動補位)"
+    
+    tw_diff = tw_data['curr'] - tw_data['prev']
+    tw_pct = (tw_diff / tw_data['prev']) * 100 if tw_data['prev'] != 0 else 0
+    st.metric(label, f"{tw_data['curr']:.0f}", f"{tw_diff:+.0f} ({tw_pct:+.2f}%)")
+    st.caption(f"📅 最後成交: {tw_data['date']}")
+
 with ca2:
     nk = m_data.get("N225", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100:.2f}%")
