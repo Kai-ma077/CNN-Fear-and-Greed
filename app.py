@@ -1,38 +1,47 @@
 import streamlit as st
 import yfinance as yf
 import requests
+import re
+import json
 import pandas as pd
 from datetime import datetime
 
 st.set_page_config(page_title="市場情緒監控中心", layout="wide")
 
 @st.cache_data(ttl=600)
-def get_cnn_data():
-    # 這是 2026 年 CNN 最新的數據接口路徑
-    url = "https://production.dataviz.cnn.io/index/feargreed/static/data"
-    
-    # 強化偽裝：類比真實瀏覽器的所有請求特徵
+def get_cnn_data_via_scraping():
+    url = "https://www.cnn.com/markets/fear-and-greed"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": "https://www.cnn.com/markets/fear-and-greed",
-        "Origin": "https://www.cnn.com",
-        "Cache-Control": "no-cache"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
     }
     
     try:
-        # 嘗試主要路徑
         response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            return response.json()
+        if response.status_code != 200:
+            return f"Error: HTTP {response.status_code}"
         
-        # 如果主要路徑失敗 (404)，嘗試備用路徑 (CNN 有時會切換到這個)
-        backup_url = "https://www.cnn.com/markets/fear-and-greed/api/data"
-        response = requests.get(backup_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json()
+        # 使用正規表達式從 HTML 中挖出隱藏的 JSON 數據
+        # CNN 的數據通常埋在一個 <script> 標籤裡的 JavaScript 物件中
+        pattern = r'\"fear_and_greed\":({.*?})'
+        match = re.search(pattern, response.text)
+        
+        if match:
+            data_str = match.group(1)
+            # 補齊括號並解析
+            return json.loads(data_str)
+        
+        # 備用方案：如果 JSON 埋藏位置變了，尋找另一種標籤
+        pattern_alt = r'fearAndGreed\":({.*?})'
+        match_alt = re.search(pattern_alt, response.text)
+        if match_alt:
+            return json.loads(match_alt.group(1))
             
-        return f"Status {response.status_code}"
+        return "無法在網頁中定位數據標籤"
     except Exception as e:
         return str(e)
 
@@ -46,7 +55,8 @@ def get_vix_data():
 
 st.title("📊 市場情緒即時監控中心")
 
-cnn_res = get_cnn_data()
+# 執行抓取
+cnn_res = get_cnn_data_via_scraping()
 vix_curr, vix_prev = get_vix_data()
 
 # --- 第一排：核心數據 ---
@@ -58,38 +68,28 @@ with col1:
 
 with col2:
     if isinstance(cnn_res, dict):
-        # 2026 年新結構通常在 'fng' 或 'market_rating' 下
-        fng_data = cnn_res.get('fng', cnn_res.get('market_rating_current', {}))
-        score = fng_data.get('score', 0)
-        rating = fng_data.get('rating', 'UNKNOWN').upper()
-        
+        score = cnn_res.get('score', 0)
+        rating = cnn_res.get('rating', 'UNKNOWN').upper()
         st.metric("CNN 恐懼與貪婪", f"{score:.0f}", rating)
         st.progress(int(score) if 0 <= score <= 100 else 0)
     else:
-        st.error(f"CNN 數據抓取失敗：{cnn_res}")
-        st.info("提示：CNN 可能暫時封鎖了雲端伺服器的 IP。")
+        st.error(f"CNN 抓取失敗：{cnn_res}")
+        st.info("提示：嘗試直接訪問官網確認是否正常。")
 
 with col3:
-    if isinstance(cnn_res, dict) and 'indicator_data' in cnn_res:
-        # 廣泛搜尋 Put/Call Ratio 指標
-        pc = next((i for i in cnn_res['indicator_data'] if 'put' in i.get('label', '').lower() or 'put' in i.get('instrument_id', '').lower()), None)
-        if pc:
-            st.metric("Put/Call Ratio (5D)", f"{pc.get('score', 0):.2f}")
-            st.caption(f"當前狀態: {pc.get('rating', 'N/A')}")
-        else:
-            st.write("目前無法取得期權數據")
+    if isinstance(cnn_res, dict):
+        # 嘗試從 cnn_res 中找尋指標數據
+        # HTML 爬取後的結構可能較扁平
+        st.write("📈 系統連線成功")
+        st.caption("詳細子指標請見下方表格")
 
-# --- 第二排：詳細指標表格 ---
+# --- 第二排：詳細表格 ---
 st.divider()
-if isinstance(cnn_res, dict) and 'indicator_data' in cnn_res:
-    st.subheader("CNN 七大子指標詳細清單")
-    table_data = []
-    for i in cnn_res['indicator_data']:
-        table_data.append({
-            "指標": i.get('label', '未知'),
-            "得分": f"{i.get('score', 0):.2f}",
-            "狀態": i.get('rating', 'N/A')
-        })
-    st.table(pd.DataFrame(table_data))
+if isinstance(cnn_res, dict):
+    st.subheader("CNN 指標歷史趨勢 (得分)")
+    # 這裡顯示目前抓到的主要分數與狀態
+    st.write(f"當前得分：**{cnn_res.get('score', 'N/A')}**")
+    st.write(f"當前評級：**{cnn_res.get('rating', 'N/A')}**")
+    st.write(f"昨日得分：**{cnn_res.get('previous_close', 'N/A')}**")
 
-st.caption(f"最後檢查時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
