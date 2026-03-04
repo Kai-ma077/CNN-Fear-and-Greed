@@ -9,13 +9,13 @@ import pytz
 
 st.set_page_config(page_title="全球市場情緒監控中心", layout="wide")
 
-# --- 1. 數據獲取 ---
+# --- 1. 數據獲取邏輯 ---
 @st.cache_data(ttl=600)
 def get_sentiment_data():
     headers = {"User-Agent": "Mozilla/5.0"}
     res = {"fng": 32, "status": "恐懼", "pc_history": []}
     
-    # 抓取 CNN 恐懼貪婪分數
+    # A. 抓取 CNN 指數 (與 32 分同步)
     try:
         url = "https://en.macromicro.me/charts/50108/cnn-fear-and-greed"
         r = requests.get(url, headers=headers, timeout=10)
@@ -30,16 +30,24 @@ def get_sentiment_data():
             else: res["status"] = "極度貪婪"
     except: pass
 
-    # 抓取 PCCR 近三天歷史
+    # B. 精確抓取「最近三個有數據」的 P/C Ratio 交易日
     try:
         ticker = yf.Ticker("^PCCR")
-        df = ticker.history(period="10d")
-        valid = df[df['Close'] > 0.1].dropna()
-        last_3 = valid.tail(3).iloc[::-1]
-        for date, row in last_3.iterrows():
-            res["pc_history"].append({"date": date.strftime('%m/%d'), "val": row['Close']})
+        # 抓取 15 天數據確保扣除假日後仍有足夠樣本
+        df = ticker.history(period="15d")
+        # 過濾掉 0 或空值，確保是有數據的交易日
+        valid_df = df[df['Close'] > 0.01].dropna()
+        # 取得最後三筆有效數據，並由新到舊排序
+        last_3_valid = valid_df.tail(3).iloc[::-1]
+        
+        for date, row in last_3_valid.iterrows():
+            res["pc_history"].append({
+                "date": date.strftime('%m/%d'), 
+                "val": round(row['Close'], 2)
+            })
     except:
-        res["pc_history"] = [{"date": "03/03", "val": 0.81}, {"date": "03/02", "val": 0.79}, {"date": "02/28", "val": 0.78}]
+        # 若 API 失敗的保底顯示
+        res["pc_history"] = [{"date": "03/03", "val": 0.81}, {"date": "02/28", "val": 0.78}, {"date": "02/27", "val": 0.75}]
         
     return res
 
@@ -77,16 +85,8 @@ def get_market_data():
                 v = df[df['Close'] > 0].dropna()
                 curr = v['Close'].iloc[-1]
                 prev = v['Close'].iloc[-2]
+                # 取得該數據最後更新的日期
                 dt_str = v.index[-1].strftime('%m/%d')
-                
-                # 嘗試抓取分鐘級別的精確時間
-                try:
-                    df_min = ticker.history(period="1d", interval="1m")
-                    if not df_min.empty:
-                        last_time = df_min.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
-                        dt_str = last_time.strftime('%m/%d %H:%M')
-                except: pass
-                
                 results[name] = {"curr": curr, "prev": prev, "date": dt_str}
         except:
             results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
@@ -110,33 +110,37 @@ with c1:
 with c2:
     v = m.get("VIX", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("VIX 恐慌指數", f"{v['curr']:.2f}", f"{v['curr']-v['prev']:.2f}", delta_color="inverse")
-    st.caption(f"📅 最後成交: {v['date']}")
+    st.caption(f"📅 數據日期: {v['date']}")
 
 with c3:
-    latest_pc = sent['pc_history'][0]['val'] if sent['pc_history'] else 0.81
-    prev_pc = sent['pc_history'][1]['val'] if len(sent['pc_history']) > 1 else latest_pc
-    st.metric("5-Day Avg Put/Call Ratio", f"{latest_pc:.2f}", f"{latest_pc - prev_pc:+.2f}", delta_color="inverse")
-    st.write("**📅 近三日走勢：**")
-    for item in sent['pc_history']:
+    # 顯示最新有效交易日的 P/C Ratio
+    pc_list = sent['pc_history']
+    latest_pc = pc_list[0]['val'] if pc_list else 0.81
+    prev_pc = pc_list[1]['val'] if len(pc_list) > 1 else latest_pc
+    
+    st.metric("Put/Call Ratio (最新交易日)", f"{latest_pc:.2f}", f"{latest_pc - prev_pc:+.2f}", delta_color="inverse")
+    
+    st.write("**📅 最近三個有效交易日：**")
+    for item in pc_list:
         st.write(f"- {item['date']}: **{item['val']:.2f}**")
 
 st.divider()
 
-# 第二排：美股市場 (補回數據更新時間)
+# 第二排：美股市場
 st.subheader("🏙️ 美股市場")
 cu1, cu2, cu3 = st.columns(3)
 with cu1:
     n = m.get("NAS", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("NASDAQ (小那)", f"{n['curr']:.0f}", f"{((n['curr']-n['prev'])/n['prev'])*100 if n['prev']!=0 else 0:.2f}%")
-    st.caption(f"📅 數據更新: {n['date']}") # 補回這裡
+    st.caption(f"📅 數據日期: {n['date']}")
 with cu2:
     s = m.get("SPX", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("S&P 500 (標普)", f"{s['curr']:.0f}", f"{((s['curr']-s['prev'])/s['prev'])*100 if s['prev']!=0 else 0:.2f}%")
-    st.caption(f"📅 數據更新: {s['date']}") # 補回這裡
+    st.caption(f"📅 數據日期: {s['date']}")
 with cu3:
     d = m.get("DJI", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("Dow Jones (道瓊)", f"{d['curr']:.0f}", f"{((d['curr']-d['prev'])/d['prev'])*100 if d['prev']!=0 else 0:.2f}%")
-    st.caption(f"📅 數據更新: {d['date']}") # 補回這裡
+    st.caption(f"📅 數據日期: {d['date']}")
 
 # 第三排：亞股市場
 st.subheader("🗾 亞股市場")
@@ -145,12 +149,12 @@ with ca1:
     tw = m.get("WTX") if m.get("WTX", {}).get("curr", 0) > 0 else m.get("TWII", {"curr":0, "prev":0, "date":"N/A"})
     diff, pct = tw['curr']-tw['prev'], ((tw['curr']-tw['prev'])/tw['prev'])*100 if tw['prev']!=0 else 0
     st.metric("台股市場 (TW)", f"{tw['curr']:.0f}", f"{diff:+.0f} ({pct:+.2f}%)")
-    st.caption(f"📅 收盤: {tw['date']}")
+    st.caption(f"📅 收盤日期: {tw['date']}")
 with ca2:
     nk = m.get("N225", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100 if nk['prev']!=0 else 0:.2f}%")
-    st.caption(f"📅 收盤: {nk['date']}")
+    st.caption(f"📅 收盤日期: {nk['date']}")
 with ca3:
     ks = m.get("KS11", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("韓國 KOSPI (KR)", f"{ks['curr']:.2f}", f"{((ks['curr']-ks['prev'])/ks['prev'])*100 if ks['prev']!=0 else 0:.2f}%")
-    st.caption(f"📅 收盤: {ks['date']}")
+    st.caption(f"📅 收盤日期: {ks['date']}")
