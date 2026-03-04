@@ -22,7 +22,6 @@ def get_comprehensive_data():
         if r.status_code == 200:
             f_match = re.search(r'\"last_value\":\s*\"(\d+\.?\d*)\"', r.text)
             if f_match: res["fng"] = float(f_match.group(1))
-            # 根據數值更新狀態
             if res["fng"] <= 25: res["status"] = "極度恐懼"
             elif res["fng"] <= 45: res["status"] = "恐懼"
             elif res["fng"] <= 55: res["status"] = "中立"
@@ -33,7 +32,7 @@ def get_comprehensive_data():
     # OP 數據校準 (3/3: 0.81, 3/2: 0.79, 2/27: 0.78)
     try:
         ticker = yf.Ticker("^PCCR")
-        df = ticker.history(period="10d")
+        df = ticker.history(period="12d")
         v_df = df[df['Close'] > 0.1].dropna()
         if not v_df.empty:
             l3 = v_df.tail(3).iloc[::-1]
@@ -66,11 +65,11 @@ def get_trading_advice(fng, vix, op):
     elif score >= 50: return "👀 【謹慎觀察】", "恐慌情緒蔓延，建議保留現金，尋找抗跌績優股。", "warning"
     else: return "📊 【照常操作】", "目前數據無明顯極端異常，按既定策略操作。", "info"
 
-# --- 3. 核心指針圖 (俐落版：整合分數與狀態) ---
+# --- 3. 核心指針圖 (優化比例) ---
 def draw_gauge(value, status):
     fig = go.Figure(go.Indicator(
         mode = "gauge+number", value = value,
-        title = {'text': f"狀態: {status}", 'font': {'size': 18}},
+        title = {'text': f"情緒狀態: {status}", 'font': {'size': 18}},
         gauge = {
             'axis': {'range': [0, 100], 'tickvals': [12.5, 35, 50, 65, 87.5], 'ticktext': ['極恐','恐懼','中性','貪婪','極貪'], 'tickfont': {'size': 12}},
             'bar': {'color': "#333333"},
@@ -81,7 +80,7 @@ def draw_gauge(value, status):
             ]
         }
     ))
-    fig.update_layout(height=260, margin=dict(l=25, r=25, t=40, b=10), paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_layout(height=260, margin=dict(l=30, r=30, t=40, b=10), paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
 # --- 4. 市場行情抓取 ---
@@ -110,29 +109,34 @@ if advice_type == "success": st.success(f"**{advice_title}** | {advice_text}")
 elif advice_type == "warning": st.warning(f"**{advice_title}** | {advice_text}")
 else: st.info(f"**{advice_title}** | {advice_text}")
 
-# 第一排：核心診斷指標
+# 第一排：核心診斷指標 (增加間距與留白)
 st.subheader("🔥 核心診斷指標")
-c1, c2, c3 = st.columns(3)
+st.write("") # 增加上方留白
+
+c1, spacer1, c2, spacer2, c3 = st.columns([1.2, 0.1, 1, 0.1, 1])
 
 with c1:
-    st.markdown("<h3 style='text-align: center;'>CNN 恐懼與貪婪</h3>", unsafe_allow_html=True)
-    st.plotly_chart(draw_gauge(data['fng'], data['status']), use_container_width=True)
+    with st.container():
+        st.markdown("<h3 style='text-align: center;'>CNN 恐懼與貪婪</h3>", unsafe_allow_html=True)
+        st.plotly_chart(draw_gauge(data['fng'], data['status']), use_container_width=True)
 
 with c2:
-    st.markdown("<h3 style='text-align: center;'>VIX 波動率指數</h3>", unsafe_allow_html=True)
-    st.write("") # 增加間距對齊指針
-    v_color = "normal" if data['vix'] < 30 else "inverse"
-    st.metric("當前 VIX 指數", f"{data['vix']:.2f}", f"{data['vix_change']:+.2f}", delta_color=v_color)
-    st.progress(min(data['vix']/50, 1.0))
-    st.write(f"VIX > 30: **恐慌** | VIX > 40: **超底**")
+    with st.container():
+        st.markdown("<h3 style='text-align: center;'>VIX 波動率指數</h3>", unsafe_allow_html=True)
+        st.write("<br>", unsafe_allow_html=True) # 使用 HTML 增加垂直間距
+        v_color = "normal" if data['vix'] < 30 else "inverse"
+        st.metric("當前 VIX 指數", f"{data['vix']:.2f}", f"{data['vix_change']:+.2f}", delta_color=v_color)
+        st.progress(min(data['vix']/50, 1.0))
+        st.write(f"VIX > 30: **恐慌** | VIX > 40: **超底**")
 
 with c3:
-    st.markdown("<h3 style='text-align: center;'>Put/Call Ratio</h3>", unsafe_allow_html=True)
-    st.write("") # 增加間距對齊指針
-    st.metric("5-Day Avg (OP)", f"{data['pc_latest']:.2f}", "OP > 1.0 抄底")
-    st.write("**📅 近三日走勢：**")
-    for item in data['pc_list']:
-        st.write(f"- {item['date']}: **{item['val']:.2f}**")
+    with st.container():
+        st.markdown("<h3 style='text-align: center;'>Put/Call Ratio</h3>", unsafe_allow_html=True)
+        st.write("<br>", unsafe_allow_html=True) # 使用 HTML 增加垂直間距
+        st.metric("5-Day Avg (OP)", f"{data['pc_latest']:.2f}", "OP > 1.0 抄底")
+        st.write("**📅 近三日走勢：**")
+        for item in data['pc_list']:
+            st.write(f"- {item['date']}: **{item['val']:.2f}**")
 
 st.divider()
 
@@ -153,4 +157,5 @@ for i, (key, label) in enumerate(markets):
             st.metric(label, fmt.format(d['curr']), f"{diff:+,.2f} ({pct:+.2f}%)")
             st.caption(f"📅 數據日期: {d['date']}")
 
+st.write("")
 st.write(f"🕒 最後更新: {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
