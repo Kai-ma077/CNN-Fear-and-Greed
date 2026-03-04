@@ -9,7 +9,7 @@ import pytz
 
 st.set_page_config(page_title="全球市場多空診斷中心", layout="wide")
 
-# --- 1. 數據獲取 ---
+# --- 1. 數據獲取 (保持校準邏輯) ---
 @st.cache_data(ttl=600)
 def get_comprehensive_data():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -22,9 +22,15 @@ def get_comprehensive_data():
         if r.status_code == 200:
             f_match = re.search(r'\"last_value\":\s*\"(\d+\.?\d*)\"', r.text)
             if f_match: res["fng"] = float(f_match.group(1))
+            # 根據數值更新狀態
+            if res["fng"] <= 25: res["status"] = "極度恐懼"
+            elif res["fng"] <= 45: res["status"] = "恐懼"
+            elif res["fng"] <= 55: res["status"] = "中立"
+            elif res["fng"] <= 75: res["status"] = "貪婪"
+            else: res["status"] = "極度貪婪"
     except: pass
 
-    # OP 數據校準與抓取
+    # OP 數據校準 (3/3: 0.81, 3/2: 0.79, 2/27: 0.78)
     try:
         ticker = yf.Ticker("^PCCR")
         df = ticker.history(period="10d")
@@ -60,12 +66,13 @@ def get_trading_advice(fng, vix, op):
     elif score >= 50: return "👀 【謹慎觀察】", "恐慌情緒蔓延，建議保留現金，尋找抗跌績優股。", "warning"
     else: return "📊 【照常操作】", "目前數據無明顯極端異常，按既定策略操作。", "info"
 
-# --- 3. 繪圖元件 (指針圖調整縮小) ---
-def draw_gauge(value):
+# --- 3. 核心指針圖 (俐落版：整合分數與狀態) ---
+def draw_gauge(value, status):
     fig = go.Figure(go.Indicator(
         mode = "gauge+number", value = value,
+        title = {'text': f"狀態: {status}", 'font': {'size': 18}},
         gauge = {
-            'axis': {'range': [0, 100], 'tickvals': [12.5, 35, 50, 65, 87.5], 'ticktext': ['極恐','恐懼','中性','貪婪','極貪'], 'tickfont': {'size': 10}},
+            'axis': {'range': [0, 100], 'tickvals': [12.5, 35, 50, 65, 87.5], 'ticktext': ['極恐','恐懼','中性','貪婪','極貪'], 'tickfont': {'size': 12}},
             'bar': {'color': "#333333"},
             'steps': [
                 {'range': [0, 25], 'color': '#ff4b4b'}, {'range': [25, 45], 'color': '#ffa424'},
@@ -74,10 +81,10 @@ def draw_gauge(value):
             ]
         }
     ))
-    fig.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_layout(height=260, margin=dict(l=25, r=25, t=40, b=10), paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
-# --- 4. 數據抓取優化 (美股與亞股) ---
+# --- 4. 市場行情抓取 ---
 @st.cache_data(ttl=600)
 def get_market_data():
     tickers = {"NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"}
@@ -103,32 +110,33 @@ if advice_type == "success": st.success(f"**{advice_title}** | {advice_text}")
 elif advice_type == "warning": st.warning(f"**{advice_title}** | {advice_text}")
 else: st.info(f"**{advice_title}** | {advice_text}")
 
-# 第一排：核心診斷指標 (均勻排版)
+# 第一排：核心診斷指標
 st.subheader("🔥 核心診斷指標")
 c1, c2, c3 = st.columns(3)
 
 with c1:
-    st.markdown("### CNN 恐懼與貪婪")
-    st.plotly_chart(draw_gauge(data['fng']), use_container_width=True)
-    st.metric("當前分數", f"{data['fng']:.0f}", data['status'])
+    st.markdown("<h3 style='text-align: center;'>CNN 恐懼與貪婪</h3>", unsafe_allow_html=True)
+    st.plotly_chart(draw_gauge(data['fng'], data['status']), use_container_width=True)
 
 with c2:
-    st.markdown("### VIX 波動率指數")
+    st.markdown("<h3 style='text-align: center;'>VIX 波動率指數</h3>", unsafe_allow_html=True)
+    st.write("") # 增加間距對齊指針
     v_color = "normal" if data['vix'] < 30 else "inverse"
-    st.metric("當前 VIX", f"{data['vix']:.2f}", f"{data['vix_change']:+.2f}", delta_color=v_color)
-    st.write(f"VIX > 30: **恐慌** | VIX > 40: **超底**")
+    st.metric("當前 VIX 指數", f"{data['vix']:.2f}", f"{data['vix_change']:+.2f}", delta_color=v_color)
     st.progress(min(data['vix']/50, 1.0))
+    st.write(f"VIX > 30: **恐慌** | VIX > 40: **超底**")
 
 with c3:
-    st.markdown("### Put/Call Ratio")
-    st.metric("5-Day Avg", f"{data['pc_latest']:.2f}", "OP > 1.0 抄底")
+    st.markdown("<h3 style='text-align: center;'>Put/Call Ratio</h3>", unsafe_allow_html=True)
+    st.write("") # 增加間距對齊指針
+    st.metric("5-Day Avg (OP)", f"{data['pc_latest']:.2f}", "OP > 1.0 抄底")
     st.write("**📅 近三日走勢：**")
     for item in data['pc_list']:
         st.write(f"- {item['date']}: **{item['val']:.2f}**")
 
 st.divider()
 
-# 第二、三排：股市行情 (解決數值跑掉問題)
+# 下方行情
 st.subheader("🏙️ 全球股市行情")
 m_data = get_market_data()
 cols = st.columns(3)
@@ -144,7 +152,5 @@ for i, (key, label) in enumerate(markets):
             fmt = "{:,.2f}" if key in ["KS11", "TWII"] else "{:,.0f}"
             st.metric(label, fmt.format(d['curr']), f"{diff:+,.2f} ({pct:+.2f}%)")
             st.caption(f"📅 數據日期: {d['date']}")
-        else:
-            st.metric(label, "數據加載中...", "N/A")
 
 st.write(f"🕒 最後更新: {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
