@@ -3,30 +3,28 @@ import yfinance as yf
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
+import pytz
 
-st.set_page_config(page_title="全球市場即時監控中心", layout="wide")
+st.set_page_config(page_title="全球市場情緒監控中心", layout="wide")
 
-# --- 定義開盤時間備註函數 ---
+# --- 定義開盤時間與時區處理 ---
 def get_opening_remarks():
-    now = datetime.now()
-    weekday = now.weekday() # 0=Mon, 6=Sun
-    
-    # 亞股 (台日韓) 通常在週一至週五 08:00 - 09:00 開盤
-    # 美股通常在週一至週五 22:30 開盤 (冬令時間)
+    now = datetime.now(pytz.timezone('Asia/Taipei'))
+    weekday = now.weekday()
     remarks = {}
-    if weekday >= 5: # 週六或週日
+    if weekday >= 5:
         days_to_mon = 7 - weekday
-        remarks['asia'] = f"📅 週末休市，下週一 {(now + timedelta(days=days_to_mon)).strftime('%m/%d')} 08:00-09:00 開盤"
+        remarks['asia'] = f"📅 週末休市，下週一 {(now + timedelta(days=days_to_mon)).strftime('%m/%d')} 09:00 開盤"
         remarks['us'] = f"📅 週末休市，下週一 {(now + timedelta(days=days_to_mon)).strftime('%m/%d')} 22:30 開盤"
     else:
-        remarks['asia'] = "🕒 亞股交易日：台(09:00)、日(08:00)、韓(08:00)"
+        remarks['asia'] = "🕒 亞股交易日：台(13:30收)、日(14:00收)、韓(14:30收)"
         remarks['us'] = "🕒 美股交易日：22:30 開盤 (冬令時間)"
     return remarks
 
 @st.cache_data(ttl=300)
 def get_cnn_fng():
     url = "https://production.dataviz.cnn.io/index/feargreed/static/data"
-    headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.cnn.com", "Referer": "https://www.cnn.com/markets/fear-and-greed"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
@@ -37,79 +35,99 @@ def get_cnn_fng():
 @st.cache_data(ttl=300)
 def get_market_data():
     tickers = {
-        "VIX": "^VIX", "PCCR": "^PCCR", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"
+        "VIX": "^VIX", "PCCR": "^PCCR", "NAS": "^IXIC", "SPX": "^GSPC", "DJI": "^DJI", 
+        "TWII": "^TWII", "N225": "^N225", "KS11": "^KS11"
     }
     results = {}
     for name, symbol in tickers.items():
         try:
-            df = yf.Ticker(symbol).history(period="10d")
-            if not df.empty:
-                valid = df[df['Close'] > 0].dropna()
-                curr = valid.iloc[-1]
-                prev = valid.iloc[-2]
-                results[name] = {
-                    "curr": curr['Close'], "prev": prev['Close'], "date": valid.index[-1].strftime('%m/%d %H:%M')
-                }
-        except: results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
+            ticker = yf.Ticker(symbol)
+            # 抓取最近 1 天的 1 分鐘 K 線來取得精確最後成交時間
+            df_recent = ticker.history(period="1d", interval="1m")
+            
+            if not df_recent.empty:
+                curr_price = df_recent['Close'].iloc[-1]
+                # 轉換為台北時間
+                last_time = df_recent.index[-1].astimezone(pytz.timezone('Asia/Taipei'))
+                time_str = last_time.strftime('%m/%d %H:%M')
+                
+                # 取得前一收盤價算漲跌
+                df_daily = ticker.history(period="5d")
+                prev_price = df_daily['Close'].iloc[-2]
+                
+                results[name] = {"curr": curr_price, "prev": prev_price, "date": time_str}
+            else:
+                # 備援方案：若一分鐘線抓不到(如休市)，抓日線
+                df_daily = ticker.history(period="2d")
+                curr_price = df_daily['Close'].iloc[-1]
+                prev_price = df_daily['Close'].iloc[-2]
+                # 手動修正顯示時間：亞股若已收盤則標示標準收盤時段
+                last_date = df_daily.index[-1].strftime('%m/%d')
+                if name == "TWII": time_str = f"{last_date} 13:45"
+                elif name == "N225": time_str = f"{last_date} 14:00"
+                elif name == "KS11": time_str = f"{last_date} 14:30"
+                else: time_str = f"{last_date} 收盤"
+                
+                results[name] = {"curr": curr_price, "prev": prev_price, "date": time_str}
+        except:
+            results[name] = {"curr": 0, "prev": 0, "date": "N/A"}
     return results
 
-# --- 介面開始 ---
+# --- UI 渲染 ---
 st.title("🌎 全球多空情緒監控中心")
 remarks = get_opening_remarks()
-st.write(f"🕒 系統檢查時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
 fng = get_cnn_fng()
 m_data = get_market_data()
 
-# --- 第一排：核心情緒指標 ---
+# 核心指標
 st.subheader("🔥 核心情緒指標")
 c1, c2, c3 = st.columns(3)
 with c1:
     if fng:
         st.metric("CNN 恐懼與貪婪", f"{fng['val']:.0f}", fng['text'])
         st.progress(int(fng['val']))
-        st.caption(f"📅 數據時間: {fng['time'][:16]}")
+        st.caption(f"📅 數據時間: {fng['time'][:16].replace('T', ' ')}")
 with c2:
     v = m_data.get("VIX", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("VIX 恐慌指數", f"{v['curr']:.2f}", f"{v['curr']-v['prev']:.2f}", delta_color="inverse")
-    st.caption(f"📅 數據時間: {v['date']}")
+    st.caption(f"📅 最後成交: {v['date']}")
 with c3:
     pc = m_data.get("PCCR", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("CBOE Put/Call Ratio", f"{pc['curr']:.2f}", f"{pc['curr']-pc['prev']:.2f}", delta_color="inverse")
-    st.caption(f"📅 數據時間: {pc['date']} (昨值)")
+    st.caption(f"📅 數據時間: {pc['date']}")
 
 st.divider()
 
-# --- 第二排：美股市場 ---
+# 美股市場
 st.subheader("🏙️ 美股市場")
 st.info(remarks['us'])
 cu1, cu2, cu3 = st.columns(3)
 with cu1:
     nas = m_data.get("NAS", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("NASDAQ (小那)", f"{nas['curr']:.0f}", f"{((nas['curr']-nas['prev'])/nas['prev'])*100:.2f}%")
-    st.caption(f"📅 數據時間: {nas['date']}")
+    st.caption(f"📅 最後成交: {nas['date']}")
 with cu2:
     sp = m_data.get("SPX", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("S&P 500 (標普)", f"{sp['curr']:.0f}", f"{((sp['curr']-sp['prev'])/sp['prev'])*100:.2f}%")
-    st.caption(f"📅 數據時間: {sp['date']}")
+    st.caption(f"📅 最後成交: {sp['date']}")
 with cu3:
     dji = m_data.get("DJI", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("Dow Jones (道瓊)", f"{dji['curr']:.0f}", f"{((dji['curr']-dji['prev'])/dji['prev'])*100:.2f}%")
-    st.caption(f"📅 數據時間: {dji['date']}")
+    st.caption(f"📅 最後成交: {dji['date']}")
 
-# --- 第三排：亞股市場 ---
+# 亞股市場
 st.subheader("🗾 亞股市場")
 st.info(remarks['asia'])
 ca1, ca2, ca3 = st.columns(3)
 with ca1:
     tw = m_data.get("TWII", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("台股加權 (TW)", f"{tw['curr']:.0f}", f"{tw['curr']-tw['prev']:.2f}")
-    st.caption(f"📅 數據時間: {tw['date']}")
+    st.caption(f"📅 收盤時間: {tw['date']}")
 with ca2:
     nk = m_data.get("N225", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("日經 225 (JP)", f"{nk['curr']:.0f}", f"{((nk['curr']-nk['prev'])/nk['prev'])*100:.2f}%")
-    st.caption(f"📅 數據時間: {nk['date']}")
+    st.caption(f"📅 收盤時間: {nk['date']}")
 with ca3:
     ks = m_data.get("KS11", {"curr":0, "prev":0, "date":"N/A"})
     st.metric("韓國 KOSPI (KR)", f"{ks['curr']:.2f}", f"{((ks['curr']-ks['prev'])/ks['prev'])*100:.2f}%")
-    st.caption(f"📅 數據時間: {ks['date']}")
+    st.caption(f"📅 收盤時間: {ks['date']}")
